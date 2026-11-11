@@ -1,0 +1,2 @@
+streamlit>=1.36,<2
+defusedxml>=0.7.1,<1
