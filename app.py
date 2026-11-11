@@ -697,7 +697,7 @@ div[data-testid="stMetric"] {background:white;border:1px solid #e4eaf0;border-ra
 </style>
 """
 st.markdown(APP_CSS, unsafe_allow_html=True)
-st.markdown('<div class="hero"><h1>🛡️ Children’s App Safety Audit</h1><p>Understand potential dark-pattern indicators in decoded Android layouts — in language parents can use.</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>🛡️ Children’s App Safety Audit</h1><p>Check Android apps for design tricks that may affect children.</p></div>', unsafe_allow_html=True)
 
 
 def create_csv_bytes(results):
@@ -824,37 +824,83 @@ def display_results(results):
 
 tutorial, scanner = st.tabs(["📘 Parent Tutorial Guide", "🔍 App Safety Audit Scanner & Dashboard"])
 with tutorial:
-    st.header("Understand the process")
-    st.markdown('<div class="info-panel"><b>What are dark patterns?</b><p>Dark patterns are design choices that may pressure children into spending money, sharing data, watching ads, or staying longer than intended. This scanner checks decoded app layouts for possible warning signs.</p></div>', unsafe_allow_html=True)
-    st.subheader("What is an APK?")
-    st.write("An APK is an Android app installation package. The scanner does not run an APK: it reads decoded XML files describing some of the app's screens.")
-    st.subheader("Prepare your files")
-    st.markdown("""1. **Obtain an authorized APK.** Prefer your own app/build or a trusted, permitted source. Third-party sites such as APKPure may carry security or licensing risks; do not assume an APK is safe just because it is available online. Never install an untrusted APK on your personal device.
-2. **Inspect the APK.** Open it in **JADX-GUI** to explore its contents. Some resources may be visible, but JADX does not always provide the fully decoded XML this scanner needs.
-3. **Decode resources if necessary.** Install **Apktool** on your computer and run `apktool d your_app.apk -o decoded_app` in a terminal. Only analyze APKs you are authorized to inspect.
-4. **Locate the XML.** Look inside `decoded_app/res/layout/` (and related `layout-*` folders). Keep `res/values/` too, so the scanner can resolve strings and dimensions.
-5. **Make a ZIP.** Compress the decoded resource folder or app folder into a `.zip`. Keep the original folder structure.
-6. **Upload and scan.** Open the Scanner tab, choose your ZIP file(s), then click **Scan Apps**.
-""")
-    st.caption("Tip: A ZIP of an APK's raw, compiled XML is not equivalent to decoded XML. Apktool is commonly needed to make resources readable.")
-    st.subheader("How to read the results")
-    st.markdown("""- 🟢 **SAFE:** no predefined indicators found in the scanned XML.
-- 🟡 **MILD RISK:** one or two counted indicators and no high-severity indicator.
-- 🔴 **UNSAFE:** three or more counted indicators, or any high-severity indicator.
+    st.header("A simple guide: from Android app to safety report")
+    st.write("You do not need to know how to code. Follow these steps on a computer, then upload your ZIP file in the Scanner tab.")
+    st.markdown('<div class="info-panel"><b>First, what are dark patterns?</b><p>Some apps use design tricks that can push children to spend money, watch more ads, or share information. This tool looks for possible warning signs in the app’s screen files.</p></div>', unsafe_allow_html=True)
 
-Open an app and then a pattern to see **📍 Where** the indicator appears, **🔎 What we found** in plain language, and **🔧 For reference** with the technical location.
-""")
-    with st.expander("Research limitations and interpretation"):
-        st.write("This is static, rule-based XML analysis. It cannot observe dynamically generated interfaces, server-side decisions, real purchases, network tracking, or runtime ad behavior. Keyword matches can be harmless in context, and some issues may be missed. These thresholds are project-defined screening criteria, not a clinically validated safety scale. Radesky et al. (2022) is contextual research and should not be cited as the source of these exact numeric thresholds without verification.")
+    st.subheader("Step 1 · Get the Android app file (APK)")
+    st.write("An **APK** is the file used to package an Android app. You need the APK file to inspect the app’s screens. You do **not** need to install the app on your phone.")
+    st.markdown("""**Where to look, in this order:**
+- **The app developer's official website or GitHub Releases:** best when the developer offers an APK directly.
+- **[F-Droid](https://f-droid.org/):** a source for free and open-source Android apps. It won't have every children's app.
+- **[APKMirror](https://www.apkmirror.com/):** a third-party APK archive; check the publisher, version, and file details carefully.
+- **[APKPure](https://apkpure.com/):** another third-party option, but use extra caution and verify the app and publisher. It is not guaranteed safe.
+
+**Safety reminder:** Avoid random download links, advertisements pretending to be download buttons, and modified or “premium unlocked” APKs. Download only apps you are allowed to inspect. If you cannot find a trustworthy APK, do not download an unknown file just to complete the scan.""")
+
+    st.subheader("Step 2 · Open the APK in JADX")
+    st.write("**JADX-GUI** is a desktop program that lets you look inside an Android app file. Get it from the [official JADX GitHub releases](https://github.com/skylot/jadx/releases).")
+    st.markdown("""1. Open **JADX-GUI** on your computer.
+2. Choose **File → Open** (or drag the APK into the window) and select your `.apk` file.
+3. Wait while JADX loads the app.
+4. In the folder list on the left, expand **Resources**. Depending on the app and JADX version, you may see **`res` → `layout`** (and folders such as `layout-land` or `layout-v21`).
+5. Open a `.xml` file in `layout`. **Can you read text such as `<LinearLayout` or `<Button` and attributes like `android:text`?** If yes, you have readable XML. If the layouts are missing or unreadable, continue to Step 3.""")
+    st.info("JADX is useful for **finding and viewing** resources, but exporting files from JADX does not always give the complete, decoded XML structure needed for scanning. For the most reliable ZIP, use Step 3.")
+
+    st.subheader("Step 3 · Decode the screen files with Apktool")
+    st.write("**Apktool** is a separate desktop tool that turns many Android resource files into readable folders. This is the recommended way to prepare files for the scanner.")
+    st.markdown("""1. Follow the installation instructions on the [official Apktool website](https://apktool.org/). You may need Java installed.
+2. Put the APK in a folder on your computer. Rename it to `my_app.apk` to make the next step easier.
+3. Open **Terminal** (macOS/Linux) or **Command Prompt / PowerShell** (Windows) in that folder.
+4. Run the command below. If Apktool is not recognized, check its installation instructions and PATH setup.""")
+    st.code("apktool d my_app.apk -o decoded_app", language="bash")
+    st.write("When it finishes, open the new **`decoded_app`** folder. Inside **`res`**, look for **`layout`** (the app's screen layouts) and **`values`** (text and size definitions). Some apps use several `layout-*` folders. Keep them all.")
+    st.caption("If the command fails, the APK may be incompatible, incomplete, or protected. The scanner cannot analyze an APK directly; it needs readable XML files.")
+
+    st.subheader("Step 4 · Make your ZIP file")
+    st.markdown("""1. Find the **`decoded_app`** folder created in Step 3.
+2. Right-click it and choose **Compress / Send to → Compressed (zipped) folder** (the wording depends on your computer).
+3. Check that the ZIP contains a path like **`decoded_app/res/layout/`** and **`decoded_app/res/values/`**. Do not zip only a screenshot or the original `.apk`.
+4. Save the `.zip` file somewhere you can find it, such as Downloads or Desktop.""")
+
+    st.subheader("Step 5 · Scan and read the report")
+    st.markdown("""1. Open the **🔍 App Safety Audit Scanner & Dashboard** tab above.
+2. Upload the ZIP file you just made.
+3. Click **🔍 Scan Apps** and wait for the results.
+4. Open the app's result card to read **What this means for your child**, **📍 Where**, and **🔎 What we found**.
+5. Use the download buttons to save the report if you want.""")
+
+    st.subheader("What do the results mean?")
+    st.markdown("""- 🟢 **SAFE:** the scanner did not find any of its predefined warning signs in the files checked.
+- 🟡 **MILD RISK:** it found one or two counted warning signs, with no high-severity finding.
+- 🔴 **UNSAFE:** it found three or more counted warning signs, or at least one high-severity finding.
+
+These labels are **screening results, not guarantees**. A green result does not prove an app is safe, and a red result does not prove the developer intended to mislead children.""")
+    with st.expander("Optional: What this tool can and cannot check"):
+        st.write("The scanner reads Android XML screen files. It cannot see everything that happens while a child uses an app, such as live ads, purchases, tracking, or screens created while the app runs. Some matching words may be harmless, and some problems may not appear in the files. The risk thresholds are rules defined for this research project; they are not a medically validated safety score.")
 
 with scanner:
     st.header("Scan decoded Android layouts")
     st.write("Upload one or more ZIP archives containing decoded `.xml` layout files and, ideally, the matching `res/values` resource files.")
     uploads = st.file_uploader("Choose ZIP files", type=["zip"], accept_multiple_files=True, help="Multiple app folders inside a ZIP are supported.")
-    with st.expander("Advanced researcher settings"):
-        new_counts = st.selectbox("Risk threshold counts", ["categories", "occurrences"], index=0, help="Categories counts distinct pattern types; occurrences counts every raw detection.")
-        new_strict = st.checkbox("Only flag small close/skip/dismiss controls", value=True)
-        st.caption("Changes apply to the next scan. The original 15 detection rules remain unchanged.")
+    with st.expander("⚙️ Advanced settings (optional — you can leave these unchanged)"):
+        st.write("These options are mainly for researchers comparing scan results. **Parents can keep the recommended defaults.**")
+        st.markdown("**How should repeated findings affect the app's safety rating?**")
+        st.write("Imagine one app has **4 tiny close buttons**, but no other problems:")
+        st.markdown("""- **Different pattern types (recommended):** counts this as **1 type** of problem → **MILD RISK**.
+- **Every time a problem appears:** counts all **4 buttons** → **UNSAFE**.""")
+        new_counts = st.radio(
+            "Choose how to count findings for the safety rating",
+            ["categories", "occurrences"],
+            index=0,
+            format_func=lambda v: "Different pattern types (recommended)" if v == "categories" else "Every occurrence (count repeated findings)",
+            help="Only the rating calculation changes. The report still shows every detected location either way.",
+        )
+        st.caption("A single High-severity finding always gives an UNSAFE rating, whichever counting option you choose. All individual findings remain visible and are included in the CSV.")
+        st.markdown("**Which small buttons should be flagged?**")
+        new_strict = st.checkbox("Only check unusually small close, skip, or dismiss buttons (recommended)", value=True)
+        st.write("**Checked:** focuses on tiny buttons used to close or skip something. **Unchecked:** also flags other tiny buttons, which may produce more false alarms.")
+        st.caption("These settings apply when you click Scan Apps. They do not delete or rewrite any of the 15 detection rules.")
     if "audit" not in st.session_state:
         st.session_state.audit = None
     if st.button("🔍 Scan Apps", type="primary", disabled=not uploads):
