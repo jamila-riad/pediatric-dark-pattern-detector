@@ -191,16 +191,79 @@ KEYWORD_RULES = {code: compile_keywords(r["keywords"])
 DP14_KEYWORDS = compile_keywords(RULES["DP-14"]["keywords"])
 
 
-def app_category(name):
-    n = name.lower()
-    if "game" in n or "play" in n:
-        return "Games"
-    if "edu" in n or "learn" in n:
-        return "Education"
-    if "social" in n or "chat" in n:
-        return "Social"
-    return "General / Unassigned"
+# Categories describe the APP, not the dark patterns it contains.
+# A ZIP filename alone is often uninformative (e.g. com.vendor.app or app_12).
+CATEGORY_TERMS = {
+    "Education": ("education", "educational", "educate", "educator", "edu", "learning", "learn", "learner", "teaching", "teach", "teacher", "tutor", "tutoring", "study", "studying", "student", "school", "classroom", "class", "lesson", "lessons", "academy", "academic", "preschool", "kindergarten", "alphabet", "phonics", "math", "mathematics", "literacy", "reading", "spelling", "language", "quiz", "homework", "curriculum", "course", "courses", "science"),
+    "Games": ("game", "games", "gaming", "gamer", "play", "puzzle", "arcade", "racing", "runner", "adventure", "battle", "simulator", "simulation", "rpg", "platformer", "level", "levels", "minecraft", "roblox"),
+    "Social": ("social", "chat", "chatting", "messenger", "messaging", "friends", "community", "network", "networking", "dating", "forum", "video call"),
+    "Entertainment": ("entertainment", "video", "videos", "movie", "movies", "cartoon", "cartoons", "streaming", "music", "songs", "podcast", "animation"),
+    "Creativity": ("drawing", "draw", "painting", "paint", "coloring", "colouring", "art", "craft", "design", "sketch", "camera", "photo", "photography"),
+    "Health & Fitness": ("fitness", "workout", "exercise", "health", "wellness", "meditation", "yoga", "sleep"),
+    "Shopping": ("shopping", "shop", "store", "marketplace", "commerce", "retail"),
+}
+# Terms that could easily be incidental in a layout (e.g. a 'play' button) are
+# deliberately NOT used to classify an app from its screen text.
+CATEGORY_CONTENT_TERMS = {
+    "Education": ("education", "educational", "learning", "teaching", "teacher", "tutoring", "preschool", "kindergarten", "phonics", "curriculum", "homework", "classroom", "lesson", "lessons", "academy"),
+    "Games": ("arcade", "racing game", "puzzle game", "game levels", "multiplayer game"),
+    "Social": ("social network", "messaging app", "chat with friends"),
+    "Entertainment": ("streaming movies", "watch cartoons", "music player"),
+    "Creativity": ("drawing app", "coloring book", "painting app"),
+    "Health & Fitness": ("fitness tracker", "workout plan", "meditation app"),
+    "Shopping": ("shopping cart", "online store"),
+}
 
+def _term_hits(value, terms):
+    value = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(value or ""))
+    value = re.sub(r"[_./\\-]+", " ", value).lower()
+    return sum(bool(re.search(r"(?<![a-z])" + re.escape(t) + r"(?![a-z])", value)) for t in terms)
+
+def classify_app(name, app_dir=None, strings=None):
+    """Return (category, evidence). Do not pretend a guess is verified metadata."""
+    scores = {c: 0 for c in CATEGORY_TERMS}
+    evidence = []
+    for c, terms in CATEGORY_TERMS.items():
+        hits = _term_hits(name, terms)
+        if hits:
+            scores[c] += hits * 5
+            evidence.append(f"{c}: app/folder name")
+    # Inspect a small set of app identity strings, not every screen string:
+    # scanning all text here would mislabel an educational game as Shopping
+    # simply because it has a purchase button.
+    identity = []
+    for key, value in (strings or {}).items():
+        if re.search(r"(?:^|_)(app_name|application_name|app_title|app_label|title_app|app_description)(?:$|_)", key, re.I):
+            identity.append(value)
+    for label in identity[:12]:
+        for c, terms in CATEGORY_TERMS.items():
+            hits = _term_hits(label, terms)
+            if hits:
+                scores[c] += hits * 4
+                evidence.append(f"{c}: app title/description")
+    # Limited content evidence only if app identity has not identified a type.
+    if not any(scores.values()) and strings:
+        values = list(strings.values())[:1000]
+        for c, terms in CATEGORY_CONTENT_TERMS.items():
+            scores[c] += min(3, sum(_term_hits(v, terms) for v in values))
+        if any(scores.values()):
+            evidence.append("weak evidence: wording in app resources")
+    best = max(scores, key=scores.get)
+    if scores[best] == 0:
+        return "General / Unassigned", "No reliable app-category clue in the provided files"
+    tied = [c for c in scores if scores[c] == scores[best]]
+    if len(tied) > 1:
+        # Educational games are generally best labeled Education when the
+        # title explicitly names learning/teaching, rather than a generic game.
+        education_specific = ("education", "educational", "learning", "learn", "teaching", "teach", "school", "preschool", "lesson", "tutor", "math", "phonics")
+        if "Education" in tied and _term_hits(name, education_specific):
+            return "Education", "Educational terms in app name (also contains game-related terms)"
+        return "General / Unassigned", "Ambiguous category clues: " + ", ".join(tied)
+    return best, "; ".join(dict.fromkeys(evidence)) or "Resource text clue"
+
+def app_category(name):
+    """Backward-compatible helper for existing code and tests."""
+    return classify_app(name)[0]
 
 def rate_app(findings):
     """SAFE / MILD RISK / UNSAFE according to the specification."""
@@ -445,6 +508,11 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
                     if val:
                         texts.append((a, val))
 
+            stats["text_fields"] += len(texts)
+            if texts:
+                stats["elements_with_text"] += 1
+            stats["elements"] += 1
+
             # ── keyword rules ──
             for code, rx_list in KEYWORD_RULES.items():
                 hits, snippet = [], ""
@@ -454,6 +522,13 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
                             hits.append(kw)
                             snippet = snippet or val
                             break
+                if code == "DP-01" and hits and set(hits) == {"interstitial"}:
+                    # 'interstitial' often appears in ad SDK placeholders.
+                    # Treat it as a possible ad only when the element also
+                    # indicates an on-screen ad/popup, not SDK terminology alone.
+                    context = " ".join((eid, tag, screen, attrs.get("contentDescription", ""))).lower()
+                    if not re.search(r"(?:popup|overlay|ad[_ -]?(?:container|view|panel|dialog)|advert)", context):
+                        hits = []
                 if hits:
                     kws = ", ".join(f"'{k}'" for k in hits)
                     snip = snippet if len(snippet) <= 80 else snippet[:77] + "…"
@@ -465,9 +540,9 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
                 dims = {}
                 for a in RULES["DP-04"]["attributes"]:
                     n = tiny_dp(resolve(attrs.get(a.replace("layout_", "layout_"), ""), strings, dimens))
-                    if n in RULES["DP-04"]["values"]:
+                    if n and float(n[:-2]) <= 24:
                         dims[a] = n
-                if dims:
+                if len(dims) == 2:
                     hint = " ".join([eid, attrs.get("contentDescription", ""), attrs.get("text", ""),
                                      attrs.get("src", ""), attrs.get("srcCompat", "")])
                     hint = re.sub(r"[_\-/@.]", " ", re.sub(r"([a-z])([A-Z])", r"\1 \2", hint)).lower()
@@ -493,8 +568,8 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
 
 
 def scan_app(app, app_dir):
-    category = app_category(app)
     strings, dimens = load_resources(app_dir)
+    category, category_evidence = classify_app(app, app_dir, strings)
     stats = defaultdict(int)
     findings = []
     for cur, dnames, fnames in os.walk(app_dir):
@@ -509,7 +584,7 @@ def scan_app(app, app_dir):
             rel = "/".join(parts + [f])
             findings += scan_file(os.path.join(cur, f), rel, app, category, strings, dimens, stats)
     findings.sort(key=lambda x: (SEV_RANK[x["severity"]], x["code"], x["location"]))
-    return {"app": app, "category": category, "findings": findings,
+    return {"app": app, "category": category, "category_evidence": category_evidence, "findings": findings,
             "rating": rate_app(findings), "stats": dict(stats)}
 
 
@@ -788,6 +863,15 @@ def display_results(results):
     for col, (label, value) in zip(row2, [("🔴 Unsafe", counts["UNSAFE"]), ("🟡 Mild risk", counts["MILD RISK"]), ("🟢 Safe", counts["SAFE"])]):
         col.metric(label, value)
     st.caption("Distinct category count sums the number of different patterns in each app; the same category can appear in more than one app.")
+    with st.expander("🔬 Research check: which patterns were detected?"):
+        st.write("This summary shows **how often each rule matched**. It does not prove that other patterns are absent: some require app behavior that XML cannot show.")
+        pattern_counts = defaultdict(int)
+        for result in results:
+            for finding in result["findings"]:
+                pattern_counts[finding["code"]] += 1
+        st.dataframe([{"Pattern": RULES[code]["name"], "Severity": rule["severity"], "Occurrences": pattern_counts[code]}
+                      for code, rule in RULES.items()], hide_index=True, use_container_width=True)
+        st.caption("For a reliable evaluation, manually inspect a sample of flagged and unflagged screens, and compare results against a labeled reference set.")
     st.markdown("### App-by-app findings")
     for result in sorted(results, key=lambda r: (RATING_ORDER[r["rating"]], -len(r["findings"]), r["app"].lower())):
         count = len(result["findings"])
@@ -797,6 +881,8 @@ def display_results(results):
             st.markdown(f'<div class="status status-{cls}">{esc(result["rating"])}</div>', unsafe_allow_html=True)
             st.write(verdict_text(result))
             st.caption(f"Category: {result['category']} · XML screens checked: {result['stats'].get('files',0)} · Distinct pattern types: {distinct_count} · Raw occurrences: {count}")
+            st.caption("Category basis: " + result.get("category_evidence", "App name only"))
+            st.caption(f"Scan coverage: {result['stats'].get('elements',0)} XML elements examined; {result['stats'].get('text_fields',0)} readable text fields found. Some apps store most content in code or remote services, which this scanner cannot inspect.")
             groups = defaultdict(list)
             for finding in result["findings"]:
                 groups[finding["code"]].append(finding)
@@ -819,7 +905,7 @@ def display_results(results):
     a, b = st.columns(2)
     a.download_button("⬇️ Download master CSV", create_csv_bytes(results), CSV_NAME, mime="text/csv", use_container_width=True)
     b.download_button("⬇️ Download parent-friendly HTML", create_html_bytes(results), HTML_NAME, mime="text/html", use_container_width=True)
-    st.info("These are potential indicators from static XML rules, not proof of deceptive intent. SAFE means no predefined indicators were found in the scanned XML, not that an app is guaranteed safe.")
+    st.info("A frequent pattern is not necessarily a false positive, and a missing pattern is not proof of absence. Review individual evidence and scan coverage. These are potential indicators from static XML rules, not proof of deceptive intent. SAFE means no predefined indicators were found in the scanned XML, not that an app is guaranteed safe.")
 
 
 tutorial, scanner = st.tabs(["📘 Parent Tutorial Guide", "🔍 App Safety Audit Scanner & Dashboard"])
