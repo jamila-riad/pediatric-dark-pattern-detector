@@ -66,9 +66,9 @@ RULES = {
     "DP-01": {"name": "Pop-Up Advertising Interruptions", "severity": "High",
               "keywords": ["promotional banner ad", "popup ad", "interstitial", "sponsored ad"]},
     "DP-02": {"name": "Coercive Rating & Review Nags", "severity": "Low",
-              "keywords": ["rate us", "five stars", "enjoying the app", "leave feedback"]},
+              "keywords": ["rate us", "five stars", "enjoying the app", "leave feedback", "rate this app", "leave a review"]},
     "DP-03": {"name": "Monetized Upgrade Nags", "severity": "High",
-              "keywords": ["unlock full version", "go ad-free", "upgrade now", "premium membership"]},
+              "keywords": ["unlock full version", "go ad-free", "upgrade now", "premium membership", "remove ads", "unlock premium"]},
     "DP-04": {"name": "Micro-Dismiss / Hidden Close", "severity": "Medium",
               "tags": ["Button", "ImageView", "ImageButton"],
               "attributes": ["layout_width", "layout_height"],
@@ -76,26 +76,26 @@ RULES = {
     "DP-05": {"name": "Obfuscated Virtual Currency", "severity": "High",
               "keywords": ["gems", "coins", "tokens", "stars", "credits", "elixir", "crystals"]},
     "DP-06": {"name": "Roach Motel / Account Deletion Friction", "severity": "Medium",
-              "keywords": ["call support", "wait 30 days", "verify via email", "contact agent"]},
+              "keywords": ["call support", "wait 30 days", "verify via email", "contact agent", "contact support to delete", "request account deletion"]},
     "DP-07": {"name": "Forced Continuity & Free-Trial Traps", "severity": "High",
-              "keywords": ["automatically renews", "then $", "free trial", "auto-renew"]},
+              "keywords": ["automatically renews", "then $", "free trial", "auto-renew", "renews automatically", "trial ends"]},
     "DP-08": {"name": "Sneak into Basket / Forced Add-ons", "severity": "High",
-              "keywords": ["added automatically", "bonus item", "gift package added", "auto-selected"]},
+              "keywords": ["added automatically", "bonus item", "gift package added", "auto-selected", "preselected add-on", "added to cart"]},
     "DP-09": {"name": "Parasocial Character Pressure", "severity": "Medium",
               "keywords": ["please", "don't leave", "help me", "sad", "crying"]},
     "DP-10": {"name": "Manipulative Reward Schedules", "severity": "Medium",
-              "keywords": ["streak", "claim daily", "countdown", "limited time", "hourly chest"]},
+              "keywords": ["streak", "claim daily", "countdown", "limited time", "hourly chest", "daily reward", "streak bonus"]},
     "DP-11": {"name": "False Hierarchy / Salience", "severity": "Medium",
-              "keywords": ["instant vip upgrade", "best value", "recommended choice"]},
+              "keywords": ["instant vip upgrade", "best value", "recommended choice", "most popular plan", "recommended plan"]},
     "DP-12": {"name": "Disguised Ads (Native Blending)", "severity": "High",
-              "keywords": ["sponsored content", "adchoices", "promoted posts"]},
+              "keywords": ["sponsored content", "adchoices", "promoted posts", "promoted content", "paid partnership"]},
     "DP-13": {"name": "Social Pyramid / Viral Coercion", "severity": "Medium",
-              "keywords": ["invite friends", "share to unlock", "unlock with contacts"]},
+              "keywords": ["invite friends", "share to unlock", "unlock with contacts", "invite to unlock", "refer friends to earn"]},
     "DP-14": {"name": "Privacy Zuckering / Default Tracking", "severity": "High",
               "tags": ["CheckBox", "Switch"], "attributes": ["checked"], "values": ["true"],
               "keywords": ["sharing data", "tracking", "default", "personalize"]},
     "DP-15": {"name": "Gamified Grind / Watch-to-Unlock", "severity": "High",
-              "keywords": ["watch ad to continue", "pay to skip", "watch video to play"]},
+              "keywords": ["watch ad to continue", "pay to skip", "watch video to play", "watch an ad to unlock", "watch video to continue"]},
 }
 
 # Plain-language explanations shown to parents
@@ -546,7 +546,11 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
                     hint = " ".join([eid, attrs.get("contentDescription", ""), attrs.get("text", ""),
                                      attrs.get("src", ""), attrs.get("srcCompat", "")])
                     hint = re.sub(r"[_\-/@.]", " ", re.sub(r"([a-z])([A-Z])", r"\1 \2", hint)).lower()
-                    if (not STRICT_CLOSE_ONLY) or CLOSE_RX.search(hint):
+                    # An ImageView is often decorative, not a tappable control.
+                    # Only treat it as a close button if explicitly clickable.
+                    interactive = (tl not in {"imageview", "appcompatimageview", "shapeableimageview"}
+                                   or attrs.get("clickable", "").lower() == "true")
+                    if interactive and ((not STRICT_CLOSE_ONLY) or CLOSE_RX.search(hint)):
                         what = " and ".join(f"{k} is set to tiny dimension ({v})" for k, v in dims.items())
                         add("DP-04", f"{what}; comfortable touch size is ~48dp", tag, eid, idx,
                             kind="dims", dims=dims)
