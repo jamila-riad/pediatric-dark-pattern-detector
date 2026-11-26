@@ -991,19 +991,24 @@ def main():
     st.markdown('<div class="hero"><h1>Children’s App Safety Audit</h1><p>Static Android XML screening · research prototype</p></div>', unsafe_allow_html=True)
     mode = st.radio("Choose your mode", ["Parent Mode", "Researcher Mode"], horizontal=True)
     parent = mode == "Parent Mode"
+    upload_key = "audit_upload_parent" if parent else "audit_upload_researcher"
+    result_key = "audit_result_parent" if parent else "audit_result_researcher"
+    def clear_result():
+        st.session_state.pop(result_key, None)
     with st.expander("How to prepare a ZIP"):
         st.write("Obtain an authorized APK from a trusted source. Do not install it. Decode resources using JADX, then ZIP the app folder including layout and values directories.")
         st.code('jadx --no-src -d decoded_app app.apk')
         st.write("Parent Mode accepts one app per scan; Researcher Mode accepts multiple app folders or ZIPs. Dynamic screens may be missing.")
-    uploads = st.file_uploader("Upload decoded XML ZIP" if parent else "Upload decoded XML ZIPs", type=["zip"], accept_multiple_files=not parent, key=mode)
+    uploads = st.file_uploader("Upload decoded XML ZIP" if parent else "Upload decoded XML ZIPs", type=["zip"], accept_multiple_files=not parent, key=upload_key, on_change=clear_result)
     if st.button("Scan application" if parent else "Scan dataset", disabled=not uploads, type="primary"):
         results, messages = audit_uploaded_files([uploads] if parent else uploads, st.progress(0))
         if parent and len(results) != 1:
             messages.append("Parent Mode requires exactly one scan-ready application. Use Researcher Mode for batch archives.")
             results = []
-        st.session_state[mode] = (results, messages)
-    if mode in st.session_state:
-        results, messages = st.session_state[mode]
+        st.session_state[result_key] = (results, messages)
+    stored = st.session_state.get(result_key)
+    if isinstance(stored, tuple) and len(stored) == 2:
+        results, messages = stored
         for msg in messages: st.warning(msg)
         if results:
             if parent: parent_report(results[0])
