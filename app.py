@@ -589,33 +589,91 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
 
 
 def component_preview(path, finding, strings, dimens):
-    # A component schematic, not a runtime Android rendering.
+    """Conservative static renderer: dimensions in dp, no invented screen content."""
     try:
         root = ET.parse(path).getroot()
         nodes = list(root.iter())
-        target = nodes[finding["node_index"]]
-        parents = {child: parent for parent in nodes for child in parent}
+        target = nodes[finding['node_index']]
+        parents = {c:p for p in nodes for c in p}
         parent = parents.get(target, root)
-        attrs = local_attrs(target.attrib)
-        def dimension(a, key):
-            return resolve(a.get(key, ""), strings, dimens) or "unknown"
-        def describe(node):
-            a = local_attrs(node.attrib)
-            return {"tag": short_tag(node.tag), "id": a.get("id", "").split("/")[-1], "text": resolve(a.get("text", ""), strings, dimens), "width": dimension(a,"layout_width"), "height": dimension(a,"layout_height"), "target": node is target}
-        return {"parent": describe(parent), "children": [describe(n) for n in list(parent)[:30] if n is not target] + [describe(target)] if target is not parent else [describe(target)]}
+        def describe(n, depth=0):
+            a = {k:resolve(v, strings, dimens) for k,v in local_attrs(n.attrib).items()}
+            return {'tag':short_tag(n.tag), 'a':a, 'target':n is target,
+                    'children':[describe(c,depth+1) for c in list(n)[:40]] if depth<5 else []}
+        return describe(parent)
     except Exception:
         return None
 
 
-def preview_html(finding):
-    p = finding.get("preview")
+def layout_svg(p):
+    def dp(v):
+        m = re.fullmatch(r'(\d+(?:\.\d+)?)(?:dp|dip|sp)', str(v))
+        return min(1000,float(m.group(1))) if m else None
+    def color(v, default):
+        return v if re.fullmatch(r'#[0-9a-fA-F]{6}',v or '') else default
+    a=p['a']; W=dp(a.get('layout_width')) or 360
+    H=dp(a.get('layout_height')) or 180
+    # A wrap-content custom container has unknown runtime height. Use an illustrative viewport.
+    unknown = dp(a.get('layout_width')) is None or dp(a.get('layout_height')) is None
+    parts=[]; notes=[]; found=[]
+    def rect(x,y,w,h,fill,stroke='#b0bac5',extra=''):
+        parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="2" fill="{fill}" stroke="{stroke}" {extra}/>')
+    def draw(n,x,y,w,h,depth=0):
+        a=n['a']; tag=n['tag']; children=n['children']
+        if a.get('visibility') in ('gone','invisible'):
+            if n['target']: notes.append('Matched control is declared hidden; shown separately.')
+            return
+        bg=color(a.get('background'), '#f4f6f8' if children else '#e1e5ea')
+        if tag=='ImageButton': bg=color(a.get('background'),'#ffffff')
+        rect(x,y,w,h,bg)
+        txt=a.get('text','')
+        if not txt and tag=='ImageButton' and n['target']:
+            txt='×'; notes.append('Close glyph is illustrative; no image source is declared in this node.')
+        if txt:
+            size=min(dp(a.get('textSize')) or 14,max(5,h*.75))
+            parts.append(f'<text x="{x+w/2}" y="{y+h/2}" dominant-baseline="central" text-anchor="middle" font-family="sans-serif" font-size="{size}" fill="{color(a.get("textColor"),"#243344")}">{esc(txt[:45])}</text>')
+        boxes={}; cursor=0
+        for c in children:
+            b=c['a'];
+            if b.get('visibility') in ('gone','invisible'):
+                if c['target']: notes.append('Matched control is declared hidden.')
+                continue
+            cw=dp(b.get('layout_width')); ch=dp(b.get('layout_height'))
+            if cw is None: cw=w if b.get('layout_width')=='match_parent' else min(w,100); notes.append('Some dimensions are estimated.')
+            if ch is None: ch=h if b.get('layout_height')=='match_parent' else min(h,36); notes.append('Some dimensions are estimated.')
+            g=b.get('layout_gravity',''); mx=dp(b.get('layout_marginEnd')) or dp(b.get('layout_marginRight')) or 0; my=dp(b.get('layout_marginTop')) or 0
+            cx=x+(dp(b.get('layout_marginStart')) or 0); cy=y+my
+            if 'end' in g or 'right' in g or b.get('layout_alignParentEnd')=='true': cx=x+w-cw-mx
+            if 'center' in g: cx=x+(w-cw)/2; cy=y+(h-ch)/2
+            ref=b.get('layout_alignEnd','').split('/')[-1]
+            if ref in boxes: cx=boxes[ref][0]+boxes[ref][2]-cw
+            if tag=='LinearLayout':
+                if a.get('orientation')=='vertical': cy=y+cursor+my; cursor+=ch+my
+                else: cx=x+cursor; cursor+=cw
+            boxes[b.get('id','').split('/')[-1]]=(cx,cy,cw,ch)
+            draw(c,cx,cy,cw,ch,depth+1)
+        if n['target']: found.append((x,y,w,h))
+    draw(p,0,0,W,H)
+    if not found: return None, 'Matched element is hidden or cannot be positioned reliably.'
+    for x,y,w,h in found:
+        rect(x-1,y-1,w+2,h+2,'none','#dc2626','stroke-width="2"')
+    # Maintain declared size ratios. Magnify small components, not individual controls.
+    svg=f'<svg xmlns="http://www.w3.org/2000/svg" width="{min(540,max(285,W))}" height="{min(800,max(285,W))*(H+12)/(W+12)}" viewBox="-6 -6 {W+12} {H+12}">'+''.join(parts)+'</svg>'
+    note='Approximate XML layout, not a screenshot. Theme, drawable assets, runtime positions and touch areas are unverified.'
+    if unknown: note+=' Container size is illustrative because its runtime dimensions are unknown.'
+    if notes: note+=' '+' '.join(dict.fromkeys(notes))
+    return svg,note
+
+
+def show_preview(finding):
+    p=finding.get('preview')
+    st.markdown('**XML-based graphical reconstruction**')
     if not p:
-        return "<p>Layout reconstruction unavailable: XML could not be parsed reliably.</p>"
-    out = '<div style="background:#eef2f6;padding:14px;border-radius:12px;color:#172b40"><b>XML-based component reconstruction</b><p>Container: '+esc(p["parent"]["tag"])+' · '+esc(p["parent"]["width"])+' × '+esc(p["parent"]["height"])+'</p>'
-    for n in p["children"]:
-        border = "3px solid #dc2626" if n["target"] else "1px solid #aab6c4"
-        out += '<div style="background:white;border:'+border+';padding:9px;margin:6px 0;border-radius:5px">'+esc(n["tag"]+' '+n["id"])+ ' · '+esc(n["width"]+' × '+n["height"])+ '<br>'+esc(n["text"][:160])+('</div>')
-    return out+'<small>Red outline identifies the matched XML node. Order, positions, colors and touch area are not reconstructed; boxes are not to scale. Not a screenshot.</small></div>'
+        st.caption('Reconstruction unavailable: XML could not be parsed reliably.')
+        return
+    svg,note=layout_svg(p)
+    if svg: st.image(svg)
+    st.caption(note)
 
 def scan_app(app, app_dir):
     strings, dimens = load_resources(app_dir)
@@ -954,7 +1012,7 @@ def display_results(results):
                         if finding.get("sdk_component_hint"):
                             st.caption("⚠️ This looks like a reusable SDK component. The XML alone cannot confirm whether children see it or how large its actual tap area is.")
                         st.caption("🔧 For reference: " + finding["location"])
-                        st.markdown(preview_html(finding), unsafe_allow_html=True)
+                        show_preview(finding)
                         if number < len(items):
                             st.divider()
             if result["stats"].get("binary") or result["stats"].get("unreadable"):
@@ -978,7 +1036,7 @@ def parent_report(result):
             st.write(PARENT_INFO[f["code"]])
             where, found = friendly_finding(f)
             st.markdown(found, unsafe_allow_html=True)
-            st.markdown(preview_html(f), unsafe_allow_html=True)
+            show_preview(f)
             st.caption(f["location"])
             if f.get("sdk_component_hint"):
                 st.warning("Possible SDK component; actual display and touch area are unverified.")
