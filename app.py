@@ -667,7 +667,7 @@ def layout_svg(p):
 
 def show_preview(finding):
     p=finding.get('preview')
-    st.markdown('**XML-based graphical reconstruction**')
+    st.markdown('<div style="font-weight:700;color:#175a86;background:#eaf3fb;padding:10px 14px;border-radius:8px">📍 Where it appears — estimated layout</div>', unsafe_allow_html=True)
     if not p:
         st.caption('Reconstruction unavailable: XML could not be parsed reliably.')
         return
@@ -704,18 +704,8 @@ def scan_app(app, app_dir):
 # 6. REPORTING (CSV + HTML)
 # ─────────────────────────────────────────────────────────────────────────────
 def write_csv(results, path):
-    cols = ["AppName", "Category", "ChecklistCode", "PatternName", "Severity",
-            "Details", "Location", "SafetyRating"]
-    with open(path, "w", newline="", encoding="utf-8-sig") as fh:     # utf-8-sig: opens cleanly in Excel
-        w = csv.writer(fh)
-        w.writerow(cols)
-        for r in results:
-            if not r["findings"]:
-                w.writerow([r["app"], r["category"], "", "No violations found", "None",
-                            "No flagged design patterns in scanned layouts", "", r["rating"]])
-            for f in r["findings"]:
-                w.writerow([r["app"], r["category"], f["code"], f["name"], f["severity"],
-                            f["details"], f["location"], r["rating"]])
+    with open(path, "wb") as fh:
+        fh.write(create_csv_bytes(results))
 
 
 def badge(sev):
@@ -891,20 +881,19 @@ div[data-testid="stMetric"] {background:white;border:1px solid #e4eaf0;border-ra
 
 def create_csv_bytes(results):
     buf = io.StringIO(newline="")
-    cols = ["AppName", "Category", "ChecklistCode", "PatternName", "Severity", "Details", "Location", "SafetyRating"]
+    cols = ["AppName", "Category", "ChecklistCode", "PatternName", "Severity", "Details", "Location", "SafetyRating",
+            "XMLFilesScanned", "FallbackParsedFiles", "BinaryXMLSkipped", "UnreadableXMLFiles", "CategoryBasis", "PossibleSDKComponent"]
     writer = csv.writer(buf)
     writer.writerow(cols)
     for r in results:
         stats = r["stats"]
-        coverage = (f" | XML files: {stats.get('files',0)}; fallback: {stats.get('fallback',0)}; "
-                    f"binary skipped: {stats.get('binary',0)}; unreadable: {stats.get('unreadable',0)}; "
-                    f"category basis: {r.get('category_evidence','Unknown')}")
+        coverage = [stats.get(k, 0) for k in ("files", "fallback", "binary", "unreadable")] + [r.get("category_evidence", "Unknown")]
         if not r["findings"]:
             writer.writerow([r["app"], r["category"], "", "No violations found", "None",
-                             "No flagged design patterns in scanned layouts" + coverage, "", r["rating"]])
+                             "No flagged design patterns in scanned layouts", "", r["rating"]] + coverage + [""])
         for f in r["findings"]:
             writer.writerow([r["app"], r["category"], f["code"], f["name"], f["severity"],
-                             f["details"] + (" | Possible SDK component; runtime visibility unverified" if f.get("sdk_component_hint") else "") + coverage, f["location"], r["rating"]])
+                             f["details"], f["location"], r["rating"]] + coverage + [bool(f.get("sdk_component_hint"))])
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
@@ -981,7 +970,7 @@ def display_results(results):
     st.dataframe([{"Code": code, "Pattern": rule["name"], "Severity": rule["severity"],
                    "Occurrences": counts[code], "Applications matched": len(apps[code])}
                   for code, rule in RULES.items()], hide_index=True, use_container_width=True)
-    st.caption("Counts are heuristic matches, not independently validated dark patterns. Application categories may be inferred and require verification.")
+    st.caption("Counts are heuristic matches, not independently validated dark patterns. Application categories may be inferred and require verification. CSV file counts are per application and repeat on each finding row; aggregate once per app in Power BI. XMLFilesScanned counts non-binary files passed to parsing, including fallback attempts; unreadable counts may overlap. SDK hints are not runtime verification.")
     st.download_button("Download research CSV", create_csv_bytes(results), CSV_NAME,
                        mime="text/csv", type="primary", use_container_width=True)
 
@@ -997,26 +986,29 @@ def parent_report(result):
       <span style="background:{soft};color:{accent};border:1px solid {accent};border-radius:20px;padding:7px 14px;font-weight:700">{label}</span></div>
       <p style="margin:12px 0 0">{esc(verdict_text(result))}</p>
       <p style="margin:8px 0 0;color:#536579;font-size:14px">{len(groups)} potential pattern types · {len(result['findings'])} matching elements</p></div>''', unsafe_allow_html=True)
-    st.markdown('''<div class="parent-note" style="background:#fff8e1;border-left:5px solid #e9a323"><b>What are dark patterns?</b> Design features that may pressure children to spend money, share information, watch ads or stay longer than intended.</div>
-    <div class="parent-card"><b>How to understand your result</b><ul style="margin:8px 0 0;padding-left:22px"><li><b style="color:#b91c1c">UNSAFE:</b> at least one high-severity indicator or three distinct pattern types.</li><li><b style="color:#986000">MILD RISK:</b> one or two pattern types, none high severity.</li><li><b style="color:#166534">SAFE:</b> no predefined indicators found in the checked XML; not a guarantee of safety.</li></ul></div>''', unsafe_allow_html=True)
+    st.markdown('''<div class="parent-note" style="background:#fff8e1;border-left:5px solid #e9a323"><b>💡 What are dark patterns?</b> Design features that may pressure children to spend money, share information, watch ads or stay longer than intended.</div>
+    <div class="parent-card"><b>📖 How to understand your result</b><ul style="margin:8px 0 0;padding-left:22px"><li><b style="color:#b91c1c">UNSAFE:</b> at least one high-severity indicator or three distinct pattern types.</li><li><b style="color:#986000">MILD RISK:</b> one or two pattern types, none high severity.</li><li><b style="color:#166534">SAFE:</b> no predefined indicators found in the checked XML; not a guarantee of safety.</li></ul></div>''', unsafe_allow_html=True)
     if groups:
-        st.subheader("What we found")
+        st.subheader("🔎 What we found")
     for code in sorted(groups, key=lambda c: (SEV_RANK[RULES[c]["severity"]], c)):
         rule, items = RULES[code], groups[code]
-        with st.expander(f"{rule['name']} · {rule['severity']} severity · {len(items)} match(es)", expanded=True):
+        with st.expander(f"{rule['name']} · {len(items)} match(es)", expanded=True):
+            severity_color, severity_bg = {"High": ("#a21b27", "#fee5e5"), "Medium": ("#875500", "#fff3d4"), "Low": ("#285d73", "#e3f2fd")}.get(rule["severity"], ("#48566a", "#f0f2f5"))
+            st.markdown(f'<span style="display:inline-block;background:{severity_bg};color:{severity_color};border-radius:20px;padding:5px 12px;font-weight:700;font-size:13px">{esc(rule["severity"])} severity</span>', unsafe_allow_html=True)
             explanation = PARENT_INFO[code]
             if code == "DP-04":
                 explanation = "A very small close button may make it harder for a child to dismiss unwanted content or avoid accidental taps."
-            st.markdown(f'<div class="parent-note" style="background:#f0f5fa"><b>What this means for your child</b><p style="margin:6px 0 0">{esc(explanation)}</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="parent-note" style="background:#eaf3fb;border-left:4px solid #4683b3"><b style="color:#174d78;font-size:16px">👪 What this means for your child</b><p style="margin:8px 0 0">{esc(explanation)}</p></div>', unsafe_allow_html=True)
             for f in items:
                 _, found = friendly_finding(f)
-                st.markdown("**What we found:** " + found, unsafe_allow_html=True)
-                show_preview(f)
+                st.markdown(f'<div class="parent-note" style="background:#fff8e7;border:1px solid #f0dfb4;border-left:4px solid #d99b29"><b style="color:#875500;font-size:16px">🔎 What we found</b><p style="margin:8px 0 0">{found}</p></div>', unsafe_allow_html=True)
+                with st.container(border=True):
+                    show_preview(f)
                 if f.get("sdk_component_hint"):
-                    st.caption("This may be a reusable advertising or SDK component. We cannot confirm that your child sees it or how large its actual touch area is.")
+                    st.markdown('<div class="parent-note" style="background:#f0f2f5;font-size:14px;color:#48566a">ℹ️ This button may belong to a reusable advertising or app component. We cannot confirm whether your child actually sees it or how large its touch area is.</div>', unsafe_allow_html=True)
                 if f is not items[-1]:
                     st.divider()
-    st.markdown('''<div class="parent-note" style="background:#e3f2fd;border-left:5px solid #3684b8"><b>What you can do</b><ul style="margin:8px 0 0;padding-left:22px"><li>Require a password or fingerprint for purchases.</li><li>Review advertising and privacy settings and check subscriptions regularly.</li><li>Try the app with your child and discuss prompts that pressure them to click, pay or keep playing.</li></ul></div>''', unsafe_allow_html=True)
+    st.markdown('''<div class="parent-note" style="background:#e3f2fd;border-left:5px solid #3684b8"><b style="color:#175a86">💡 What you can do</b><ul style="margin:8px 0 0;padding-left:22px"><li>Require a password or fingerprint for purchases.</li><li>Review advertising and privacy settings and check subscriptions regularly.</li><li>Try the app with your child and discuss prompts that pressure them to click, pay or keep playing.</li></ul></div>''', unsafe_allow_html=True)
     stats = result["stats"]
     if any(stats.get(k) for k in ("fallback", "binary", "unreadable")):
         st.warning("Some layout files could not be read normally. The check may be incomplete.")
@@ -1024,20 +1016,36 @@ def parent_report(result):
 
 
 def parent_guide():
-    with st.expander("How to prepare your child's app — step-by-step guide", expanded=False):
-        st.markdown("""**1. What is an APK?** An APK is an Android application package, containing the app's code and resources. This scanner reads decoded layout files, not installed apps or raw APKs. It does not support iPhone apps.
+    with st.expander("📘 How to get your app ready — 6 simple steps", expanded=False):
+        st.markdown("""You will need a computer and a copy of the Android app you want to check. You do not need to write any code.
 
-**2. Obtain the APK safely.** Prefer the app developer's official download or an authorized copy of the app. Google Play does not normally offer a direct APK download button. If you cannot obtain an authorized APK from a trusted source, do not use an unknown downloader. Never install an APK just to scan it.
+**1. Get a copy of the app (APK)**
 
-**3. Download JADX.** Open the [official JADX releases](https://github.com/skylot/jadx/releases) and choose the GUI package for your operating system (on Windows, the GUI package with bundled JRE is convenient). Extract the ZIP and launch JADX-GUI. Keep your security software enabled.
+An APK is the file used to install an Android app. Think of it as a package containing the app's screens, pictures and instructions. This tool does not check iPhone apps.
 
-**4. Extract the app resources.** In JADX-GUI, choose File → Open file and select your APK. Once it loads, choose File → Save all (or the export/save option in your version) and select an empty folder. Wait for export to finish.
+Look for an official APK download from the app maker, or use a copy you are allowed to obtain from a trusted source. Google Play usually does not offer an APK download button. If you cannot find a trusted copy, stop rather than use an unfamiliar download site. You do not need to install the APK.
 
-**5. Prepare the ZIP.** In the exported folder, locate the resource directory, usually `resources/res`. Keep its `layout`, `layout-*`, `values`, and `values-*` folders together, along with other resource XML. Compress the `res` folder contents into a ZIP, named after the app. On Windows, select the resource folders, right-click and choose Compress to ZIP file (or Send to → Compressed folder). Do not include unrelated apps or personal files.
+**2. Get the free tool that opens APKs**
 
-**6. Upload and scan.** Upload that ZIP below and select Scan application. Read the assessment, explanations and highlighted graphical evidence. If there are no layout XML files, this app may use a different UI technology and cannot be reliably screened here.
+Go to the [official JADX download page](https://github.com/skylot/jadx/releases). On Windows, choose the GUI ZIP with JRE included (this means Java is already provided). Unzip it and open the JADX-GUI application. Keep your antivirus enabled.
 
-**Privacy:** Upload only resources you are authorized to share. This hosted scanner processes files on a remote server. Do not upload personal data or confidential app files.""")
+**3. Open your child's app in JADX**
+
+Click **File → Open file**, choose the APK you downloaded and wait for it to load. Then choose **File → Save all** (or the equivalent export option) and save everything into a new folder.
+
+**4. Find the screen design files**
+
+Open the folder you just saved. Look for **resources**, then **res**. The folders named **layout** and **values** contain screen designs and supporting information. Keep the entire res folder together so that the checker can read both. If there is no layout folder or readable layout XML, this tool may not support the app.
+
+**5. Make a ZIP file**
+
+Right-click the res folder and choose **Compress to ZIP file** (or **Send to → Compressed folder** on Windows). Rename the ZIP after the app. Include only one app, not personal files.
+
+**6. Check the app**
+
+Upload your ZIP below and click **Scan application**. You will see a simple explanation of any potential concerns and an estimated picture of the matching control, when available.
+
+🔒 **Privacy:** Only upload files you have permission to share. The checker runs online, so do not upload private or confidential files.""")
 
 
 def main():
