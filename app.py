@@ -668,6 +668,10 @@ def layout_svg(p):
 def show_preview(finding):
     p=finding.get('preview')
     st.markdown('<div style="font-weight:700;color:#175a86;background:#eaf3fb;padding:10px 14px;border-radius:8px">📍 Where it appears — estimated layout</div>', unsafe_allow_html=True)
+    screen = friendly_name(finding.get("screen", "")).capitalize() or "Unnamed layout"
+    source = finding.get("location", "").split(" › ", 1)[0]
+    st.markdown(f'<div class="parent-note" style="background:#f0f5fa;border-left:4px solid #4683b3"><b style="color:#174d78">📱 Screen or component where it was found</b><p style="margin:8px 0 4px;font-size:17px;font-weight:600">{esc(screen)}</p><p style="margin:0;font-size:13px">This name comes from the app’s saved layout file, not necessarily the screen title you see in the app.</p></div>', unsafe_allow_html=True)
+    st.caption(f"Layout file: {source}")
     if not p:
         st.caption('Reconstruction unavailable: XML could not be parsed reliably.')
         return
