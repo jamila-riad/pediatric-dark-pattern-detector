@@ -880,6 +880,8 @@ APP_CSS = """
 .status-safe {background:#e4f6e8;color:#166534;}
 .status-mild {background:#fff3d4;color:#875500;}
 .status-unsafe {background:#fee5e5;color:#a21b27;}
+.parent-card {background:#fff;border:1px solid #e0e6eb;border-radius:12px;padding:18px 20px;margin:12px 0;color:#263238;line-height:1.6;}
+.parent-note {border-radius:10px;padding:14px 18px;margin:12px 0;color:#263238;line-height:1.6;}
 .small-note {font-size:.88rem;color:#586879;}
 div[data-testid="stMetric"] {background:white;border:1px solid #e4eaf0;border-radius:14px;padding:15px;}
 </style>
@@ -893,12 +895,16 @@ def create_csv_bytes(results):
     writer = csv.writer(buf)
     writer.writerow(cols)
     for r in results:
+        stats = r["stats"]
+        coverage = (f" | XML files: {stats.get('files',0)}; fallback: {stats.get('fallback',0)}; "
+                    f"binary skipped: {stats.get('binary',0)}; unreadable: {stats.get('unreadable',0)}; "
+                    f"category basis: {r.get('category_evidence','Unknown')}")
         if not r["findings"]:
             writer.writerow([r["app"], r["category"], "", "No violations found", "None",
-                             "No flagged design patterns in scanned layouts", "", r["rating"]])
+                             "No flagged design patterns in scanned layouts" + coverage, "", r["rating"]])
         for f in r["findings"]:
             writer.writerow([r["app"], r["category"], f["code"], f["name"], f["severity"],
-                             f["details"], f["location"], r["rating"]])
+                             f["details"] + (" | Possible SDK component; runtime visibility unverified" if f.get("sdk_component_hint") else "") + coverage, f["location"], r["rating"]])
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
@@ -949,7 +955,7 @@ def audit_uploaded_files(uploaded_files, progress=None):
                         finding["app"] = unique
                     results.append(result)
                     if result["stats"].get("binary"):
-                        messages.append(f"{unique}: {result['stats']['binary']} binary XML files were skipped; decode with Apktool.")
+                        messages.append(f"{unique}: {result['stats']['binary']} binary XML files were skipped; decode with JADX or Apktool.")
                     if result["stats"].get("fallback"):
                         messages.append(f"{unique}: {result['stats']['fallback']} malformed XML files used fallback parsing.")
                     if result["stats"].get("unreadable"):
@@ -964,84 +970,74 @@ def audit_uploaded_files(uploaded_files, progress=None):
 
 
 def display_results(results):
-    counts = {rating: sum(r["rating"] == rating for r in results) for rating in ("SAFE", "MILD RISK", "UNSAFE")}
-    total = sum(len(r["findings"]) for r in results)
-    distinct = sum(len({f["code"] for f in r["findings"]}) for r in results)
-    st.subheader("Audit overview")
-    row1 = st.columns(3)
-    for col, (label, value) in zip(row1, [("Apps scanned", len(results)), ("Raw occurrences", total), ("Distinct categories (across apps)", distinct)]):
-        col.metric(label, value)
-    row2 = st.columns(3)
-    for col, (label, value) in zip(row2, [("🔴 Unsafe", counts["UNSAFE"]), ("🟡 Mild risk", counts["MILD RISK"]), ("🟢 Safe", counts["SAFE"])]):
-        col.metric(label, value)
-    st.caption("Distinct category count sums the number of different patterns in each app; the same category can appear in more than one app.")
-    with st.expander("🔬 Research check: which patterns were detected?"):
-        st.write("This summary shows **how often each rule matched**. It does not prove that other patterns are absent: some require app behavior that XML cannot show.")
-        pattern_counts = defaultdict(int)
-        for result in results:
-            for finding in result["findings"]:
-                pattern_counts[finding["code"]] += 1
-        st.dataframe([{"Pattern": RULES[code]["name"], "Severity": rule["severity"], "Occurrences": pattern_counts[code]}
-                      for code, rule in RULES.items()], hide_index=True, use_container_width=True)
-        st.caption("For a reliable evaluation, manually inspect a sample of flagged and unflagged screens, and compare results against a labeled reference set.")
-    st.markdown("### App-by-app findings")
-    for result in sorted(results, key=lambda r: (RATING_ORDER[r["rating"]], -len(r["findings"]), r["app"].lower())):
-        count = len(result["findings"])
-        distinct_count = len({f["code"] for f in result["findings"]})
-        with st.container(border=True):
-            st.subheader(result["app"])
-            cls = {"SAFE":"safe", "MILD RISK":"mild", "UNSAFE":"unsafe"}[result["rating"]]
-            st.markdown(f'<div class="status status-{cls}">{esc(result["rating"])}</div>', unsafe_allow_html=True)
-            st.write(verdict_text(result))
-            st.caption(f"Category: {result['category']} · XML screens checked: {result['stats'].get('files',0)} · Distinct pattern types: {distinct_count} · Raw occurrences: {count}")
-            st.caption("Category basis: " + result.get("category_evidence", "App name only"))
-            st.caption(f"Scan coverage: {result['stats'].get('elements',0)} XML elements examined; {result['stats'].get('text_fields',0)} readable text fields found. Some apps store most content in code or remote services, which this scanner cannot inspect.")
-            groups = defaultdict(list)
-            for finding in result["findings"]:
-                groups[finding["code"]].append(finding)
-            for code in sorted(groups, key=lambda c: (SEV_RANK[RULES[c]["severity"]], c)):
-                rule, items = RULES[code], groups[code]
-                with st.expander(f"{rule['name']} · {rule['severity']} severity · {len(items)} occurrence(s)"):
-                    st.markdown("**👪 What this means for your child**")
-                    st.write(PARENT_INFO[code])
-                    for number, finding in enumerate(items, 1):
-                        where, found = friendly_finding(finding)
-                        st.markdown(f"**Example {number} of {len(items)}**")
-                        st.markdown("**📍 Where:** " + where, unsafe_allow_html=True)
-                        st.markdown("**🔎 What we found:** " + found, unsafe_allow_html=True)
-                        if finding.get("sdk_component_hint"):
-                            st.caption("⚠️ This looks like a reusable SDK component. The XML alone cannot confirm whether children see it or how large its actual tap area is.")
-                        st.caption("🔧 For reference: " + finding["location"])
-                        show_preview(finding)
-                        if number < len(items):
-                            st.divider()
-            if result["stats"].get("binary") or result["stats"].get("unreadable"):
-                st.warning("Some files could not be fully analyzed. See scan notices for details.")
-    st.markdown("### Download your reports")
-    a, b = st.columns(2)
-    a.download_button("⬇️ Download master CSV", create_csv_bytes(results), CSV_NAME, mime="text/csv", use_container_width=True)
-    b.download_button("⬇️ Download parent-friendly HTML", create_html_bytes(results), HTML_NAME, mime="text/html", use_container_width=True)
-    st.info("A frequent pattern is not necessarily a false positive, and a missing pattern is not proof of absence. Review individual evidence and scan coverage. These are potential indicators from static XML rules, not proof of deceptive intent. SAFE means no predefined indicators were found in the scanned XML, not that an app is guaranteed safe.")
+    st.subheader("Dark-pattern rule summary")
+    st.write("This summary shows **how often each rule matched**. Zero matches do not establish absence of a dark pattern.")
+    counts = defaultdict(int)
+    apps = defaultdict(set)
+    for r in results:
+        for f in r["findings"]:
+            counts[f["code"]] += 1
+            apps[f["code"]].add(r["app"])
+    st.dataframe([{"Code": code, "Pattern": rule["name"], "Severity": rule["severity"],
+                   "Occurrences": counts[code], "Applications matched": len(apps[code])}
+                  for code, rule in RULES.items()], hide_index=True, use_container_width=True)
+    st.caption("Counts are heuristic matches, not independently validated dark patterns. Application categories may be inferred and require verification.")
+    st.download_button("Download research CSV", create_csv_bytes(results), CSV_NAME,
+                       mime="text/csv", type="primary", use_container_width=True)
 
 
 def parent_report(result):
-    st.subheader(result["app"])
-    st.metric("Screening assessment", result["rating"])
-    st.write(verdict_text(result))
-    st.caption("Static screening only. No findings does not mean safe. Risk thresholds are researcher-defined.")
+    label, accent, soft = RATING_STYLE[result["rating"]]
+    groups = defaultdict(list)
     for f in result["findings"]:
-        with st.container(border=True):
-            st.subheader(f["name"])
-            st.caption(f["severity"] + " severity · " + f["code"])
-            st.write(PARENT_INFO[f["code"]])
-            where, found = friendly_finding(f)
-            st.markdown(found, unsafe_allow_html=True)
-            show_preview(f)
-            st.caption(f["location"])
-            if f.get("sdk_component_hint"):
-                st.warning("Possible SDK component; actual display and touch area are unverified.")
-            st.write("Recommendation: review this interaction with your child before allowing independent use.")
-    st.download_button("Download HTML report", create_html_bytes([result]), HTML_NAME, mime="text/html")
+        groups[f["code"]].append(f)
+    st.markdown(f'''<div class="parent-card" style="border-left:6px solid {accent}">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+      <h2 style="margin:0;font-size:23px">{esc(result['app'].removesuffix('_layout'))}</h2>
+      <span style="background:{soft};color:{accent};border:1px solid {accent};border-radius:20px;padding:7px 14px;font-weight:700">{label}</span></div>
+      <p style="margin:12px 0 0">{esc(verdict_text(result))}</p>
+      <p style="margin:8px 0 0;color:#536579;font-size:14px">{len(groups)} potential pattern types · {len(result['findings'])} matching elements</p></div>''', unsafe_allow_html=True)
+    st.markdown('''<div class="parent-note" style="background:#fff8e1;border-left:5px solid #e9a323"><b>What are dark patterns?</b> Design features that may pressure children to spend money, share information, watch ads or stay longer than intended.</div>
+    <div class="parent-card"><b>How to understand your result</b><ul style="margin:8px 0 0;padding-left:22px"><li><b style="color:#b91c1c">UNSAFE:</b> at least one high-severity indicator or three distinct pattern types.</li><li><b style="color:#986000">MILD RISK:</b> one or two pattern types, none high severity.</li><li><b style="color:#166534">SAFE:</b> no predefined indicators found in the checked XML; not a guarantee of safety.</li></ul></div>''', unsafe_allow_html=True)
+    if groups:
+        st.subheader("What we found")
+    for code in sorted(groups, key=lambda c: (SEV_RANK[RULES[c]["severity"]], c)):
+        rule, items = RULES[code], groups[code]
+        with st.expander(f"{rule['name']} · {rule['severity']} severity · {len(items)} match(es)", expanded=True):
+            explanation = PARENT_INFO[code]
+            if code == "DP-04":
+                explanation = "A very small close button may make it harder for a child to dismiss unwanted content or avoid accidental taps."
+            st.markdown(f'<div class="parent-note" style="background:#f0f5fa"><b>What this means for your child</b><p style="margin:6px 0 0">{esc(explanation)}</p></div>', unsafe_allow_html=True)
+            for f in items:
+                _, found = friendly_finding(f)
+                st.markdown("**What we found:** " + found, unsafe_allow_html=True)
+                show_preview(f)
+                if f.get("sdk_component_hint"):
+                    st.caption("This may be a reusable advertising or SDK component. We cannot confirm that your child sees it or how large its actual touch area is.")
+                if f is not items[-1]:
+                    st.divider()
+    st.markdown('''<div class="parent-note" style="background:#e3f2fd;border-left:5px solid #3684b8"><b>What you can do</b><ul style="margin:8px 0 0;padding-left:22px"><li>Require a password or fingerprint for purchases.</li><li>Review advertising and privacy settings and check subscriptions regularly.</li><li>Try the app with your child and discuss prompts that pressure them to click, pay or keep playing.</li></ul></div>''', unsafe_allow_html=True)
+    stats = result["stats"]
+    if any(stats.get(k) for k in ("fallback", "binary", "unreadable")):
+        st.warning("Some layout files could not be read normally. The check may be incomplete.")
+    st.caption("This automated screening examines stored app layouts, not live screens, online ads or actual purchases. Red outlines identify matched elements in approximate reconstructions, not screenshots. Risk thresholds are research-defined.")
+
+
+def parent_guide():
+    with st.expander("How to prepare your child's app — step-by-step guide", expanded=False):
+        st.markdown("""**1. What is an APK?** An APK is an Android application package, containing the app's code and resources. This scanner reads decoded layout files, not installed apps or raw APKs. It does not support iPhone apps.
+
+**2. Obtain the APK safely.** Prefer the app developer's official download or an authorized copy of the app. Google Play does not normally offer a direct APK download button. If you cannot obtain an authorized APK from a trusted source, do not use an unknown downloader. Never install an APK just to scan it.
+
+**3. Download JADX.** Open the [official JADX releases](https://github.com/skylot/jadx/releases) and choose the GUI package for your operating system (on Windows, the GUI package with bundled JRE is convenient). Extract the ZIP and launch JADX-GUI. Keep your security software enabled.
+
+**4. Extract the app resources.** In JADX-GUI, choose File → Open file and select your APK. Once it loads, choose File → Save all (or the export/save option in your version) and select an empty folder. Wait for export to finish.
+
+**5. Prepare the ZIP.** In the exported folder, locate the resource directory, usually `resources/res`. Keep its `layout`, `layout-*`, `values`, and `values-*` folders together, along with other resource XML. Compress the `res` folder contents into a ZIP, named after the app. On Windows, select the resource folders, right-click and choose Compress to ZIP file (or Send to → Compressed folder). Do not include unrelated apps or personal files.
+
+**6. Upload and scan.** Upload that ZIP below and select Scan application. Read the assessment, explanations and highlighted graphical evidence. If there are no layout XML files, this app may use a different UI technology and cannot be reliably screened here.
+
+**Privacy:** Upload only resources you are authorized to share. This hosted scanner processes files on a remote server. Do not upload personal data or confidential app files.""")
 
 
 def main():
@@ -1053,10 +1049,11 @@ def main():
     result_key = "audit_result_parent" if parent else "audit_result_researcher"
     def clear_result():
         st.session_state.pop(result_key, None)
-    with st.expander("How to prepare a ZIP"):
-        st.write("Obtain an authorized APK from a trusted source. Do not install it. Decode resources using JADX, then ZIP the app folder including layout and values directories.")
-        st.code('jadx --no-src -d decoded_app app.apk')
-        st.write("Parent Mode accepts one app per scan; Researcher Mode accepts multiple app folders or ZIPs. Dynamic screens may be missing.")
+    if parent:
+        st.write("Check one Android app for potential design features that may pressure your child.")
+        parent_guide()
+    else:
+        st.write("Upload decoded XML archives with separate folders for each application. Preserve layout and values resources; raw APKs are not supported.")
     uploads = st.file_uploader("Upload decoded XML ZIP" if parent else "Upload decoded XML ZIPs", type=["zip"], accept_multiple_files=not parent, key=upload_key, on_change=clear_result)
     if st.button("Scan application" if parent else "Scan dataset", disabled=not uploads, type="primary"):
         results, messages = audit_uploaded_files([uploads] if parent else uploads, st.progress(0))
@@ -1067,7 +1064,11 @@ def main():
     stored = st.session_state.get(result_key)
     if isinstance(stored, tuple) and len(stored) == 2:
         results, messages = stored
-        for msg in messages: st.warning(msg)
+        if messages and not parent:
+            with st.expander("Scan notices and XML parsing issues", expanded=True):
+                for msg in messages: st.warning(msg)
+        elif messages and not results:
+            for msg in messages: st.warning(msg)
         if results:
             if parent: parent_report(results[0])
             else: display_results(results)
