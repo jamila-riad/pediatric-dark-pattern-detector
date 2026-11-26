@@ -195,7 +195,7 @@ DP14_KEYWORDS = compile_keywords(RULES["DP-14"]["keywords"])
 # A ZIP filename alone is often uninformative (e.g. com.vendor.app or app_12).
 CATEGORY_TERMS = {
     "Education": ("education", "educational", "educate", "educator", "edu", "learning", "learn", "learner", "teaching", "teach", "teacher", "tutor", "tutoring", "study", "studying", "student", "school", "classroom", "class", "lesson", "lessons", "academy", "academic", "preschool", "kindergarten", "alphabet", "phonics", "math", "mathematics", "literacy", "reading", "spelling", "language", "quiz", "homework", "curriculum", "course", "courses", "science"),
-    "Games": ("game", "games", "gaming", "gamer", "play", "puzzle", "arcade", "racing", "runner", "adventure", "battle", "simulator", "simulation", "rpg", "platformer", "level", "levels", "minecraft", "roblox"),
+    "Games": ("game", "games", "gaming", "gamer", "play", "puzzle", "puzzles", "arcade", "racing", "runner", "adventure", "battle", "simulator", "simulation", "rpg", "platformer", "level", "levels", "minecraft", "roblox"),
     "Social": ("social", "chat", "chatting", "messenger", "messaging", "friends", "community", "network", "networking", "dating", "forum", "video call"),
     "Entertainment": ("entertainment", "video", "videos", "movie", "movies", "cartoon", "cartoons", "streaming", "music", "songs", "podcast", "animation"),
     "Creativity": ("drawing", "draw", "painting", "paint", "coloring", "colouring", "art", "craft", "design", "sketch", "camera", "photo", "photography"),
@@ -223,8 +223,20 @@ def classify_app(name, app_dir=None, strings=None):
     """Return (category, evidence). Do not pretend a guess is verified metadata."""
     scores = {c: 0 for c in CATEGORY_TERMS}
     evidence = []
+    # Some extracted app names join words together without separators.
+    # Match only distinctive tokens in those names, not generic UI words.
+    compact_name = re.sub(r"[^a-z0-9]", "", name.lower())
+    strong_name_tokens = {
+        "Education": ("educational", "education", "learning", "teaching", "preschool", "kindergarten", "letterschool"),
+        "Games": ("games", "game", "puzzles", "puzzle", "surfers", "adventure", "runner"),
+        "Social": ("messenger", "social", "chatting"),
+        "Entertainment": ("music", "songs", "cartoons"),
+        "Creativity": ("acrylicnails", "coloring", "drawing", "painting"),
+    }
     for c, terms in CATEGORY_TERMS.items():
         hits = _term_hits(name, terms)
+        if not hits and any(token in compact_name for token in strong_name_tokens.get(c, ())):
+            hits = 1
         if hits:
             scores[c] += hits * 5
             evidence.append(f"{c}: app/folder name")
@@ -490,7 +502,7 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
         findings.append({"app": app, "category": category, "code": code, "name": rule["name"],
                          "severity": rule["severity"], "details": details,
                          "location": loc, "screen": screen,
-                         "tag": tag, "eid": eid, "extra": extra})
+                         "tag": tag, "eid": eid, "extra": extra, "node_index": idx})
 
     try:
         for idx, (tag, attrs, fallback) in enumerate(iter_elements(data)):
@@ -529,6 +541,11 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
                     context = " ".join((eid, tag, screen, attrs.get("contentDescription", ""))).lower()
                     if not re.search(r"(?:popup|overlay|ad[_ -]?(?:container|view|panel|dialog)|advert)", context):
                         hits = []
+                if code == "DP-05" and hits:
+                    # Stars in a rating prompt are not virtual currency.
+                    rating_context = " ".join((snippet, eid, screen)).lower()
+                    if re.search(r"(?:rate\s*us|rating|review|5\s*stars?|five\s*stars?)", rating_context):
+                        hits = [kw for kw in hits if kw != "stars"]
                 if hits:
                     kws = ", ".join(f"'{k}'" for k in hits)
                     snip = snippet if len(snippet) <= 80 else snippet[:77] + "…"
@@ -571,6 +588,35 @@ def scan_file(path, rel, app, category, strings, dimens, stats):
     return findings
 
 
+def component_preview(path, finding, strings, dimens):
+    # A component schematic, not a runtime Android rendering.
+    try:
+        root = ET.parse(path).getroot()
+        nodes = list(root.iter())
+        target = nodes[finding["node_index"]]
+        parents = {child: parent for parent in nodes for child in parent}
+        parent = parents.get(target, root)
+        attrs = local_attrs(target.attrib)
+        def dimension(a, key):
+            return resolve(a.get(key, ""), strings, dimens) or "unknown"
+        def describe(node):
+            a = local_attrs(node.attrib)
+            return {"tag": short_tag(node.tag), "id": a.get("id", "").split("/")[-1], "text": resolve(a.get("text", ""), strings, dimens), "width": dimension(a,"layout_width"), "height": dimension(a,"layout_height"), "target": node is target}
+        return {"parent": describe(parent), "children": [describe(n) for n in list(parent)[:30] if n is not target] + [describe(target)] if target is not parent else [describe(target)]}
+    except Exception:
+        return None
+
+
+def preview_html(finding):
+    p = finding.get("preview")
+    if not p:
+        return "<p>Layout reconstruction unavailable: XML could not be parsed reliably.</p>"
+    out = '<div style="background:#eef2f6;padding:14px;border-radius:12px;color:#172b40"><b>XML-based component reconstruction</b><p>Container: '+esc(p["parent"]["tag"])+' · '+esc(p["parent"]["width"])+' × '+esc(p["parent"]["height"])+'</p>'
+    for n in p["children"]:
+        border = "3px solid #dc2626" if n["target"] else "1px solid #aab6c4"
+        out += '<div style="background:white;border:'+border+';padding:9px;margin:6px 0;border-radius:5px">'+esc(n["tag"]+' '+n["id"])+ ' · '+esc(n["width"]+' × '+n["height"])+ '<br>'+esc(n["text"][:160])+('</div>')
+    return out+'<small>Red outline identifies the matched XML node. Order, positions, colors and touch area are not reconstructed; boxes are not to scale. Not a screenshot.</small></div>'
+
 def scan_app(app, app_dir):
     strings, dimens = load_resources(app_dir)
     category, category_evidence = classify_app(app, app_dir, strings)
@@ -587,6 +633,10 @@ def scan_app(app, app_dir):
                 continue
             rel = "/".join(parts + [f])
             findings += scan_file(os.path.join(cur, f), rel, app, category, strings, dimens, stats)
+    for finding in findings:
+        filename = finding["location"].split(" › ", 1)[0].lower()
+        finding["sdk_component_hint"] = bool(re.search(r"(?:sdk_|pob_monitor|admob_|google_ads|facebook_ads)", filename))
+        finding["preview"] = component_preview(os.path.join(app_dir, finding["location"].split(" › ",1)[0]), finding, strings, dimens)
     findings.sort(key=lambda x: (SEV_RANK[x["severity"]], x["code"], x["location"]))
     return {"app": app, "category": category, "category_evidence": category_evidence, "findings": findings,
             "rating": rate_app(findings), "stats": dict(stats)}
@@ -755,9 +805,10 @@ def build_html(results):
 # ─────────────────────────────────────────────────────────────────────────────
 import io
 import hashlib
-import streamlit as st
+if __name__ == "__main__":
+    import streamlit as st
 
-st.set_page_config(page_title="Children's App Safety Audit", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
+    st.set_page_config(page_title="Children's App Safety Audit", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
 
 APP_CSS = """
 <style>
@@ -775,8 +826,7 @@ APP_CSS = """
 div[data-testid="stMetric"] {background:white;border:1px solid #e4eaf0;border-radius:14px;padding:15px;}
 </style>
 """
-st.markdown(APP_CSS, unsafe_allow_html=True)
-st.markdown('<div class="hero"><h1>🛡️ Children’s App Safety Audit</h1><p>Check Android apps for design tricks that may affect children.</p></div>', unsafe_allow_html=True)
+
 
 
 def create_csv_bytes(results):
@@ -880,7 +930,8 @@ def display_results(results):
     for result in sorted(results, key=lambda r: (RATING_ORDER[r["rating"]], -len(r["findings"]), r["app"].lower())):
         count = len(result["findings"])
         distinct_count = len({f["code"] for f in result["findings"]})
-        with st.expander(f"{RATING_STYLE[result['rating']][0]}  ·  {result['app']}  ·  {count} occurrence(s)", expanded=result["rating"] == "UNSAFE"):
+        with st.container(border=True):
+            st.subheader(result["app"])
             cls = {"SAFE":"safe", "MILD RISK":"mild", "UNSAFE":"unsafe"}[result["rating"]]
             st.markdown(f'<div class="status status-{cls}">{esc(result["rating"])}</div>', unsafe_allow_html=True)
             st.write(verdict_text(result))
@@ -900,7 +951,10 @@ def display_results(results):
                         st.markdown(f"**Example {number} of {len(items)}**")
                         st.markdown("**📍 Where:** " + where, unsafe_allow_html=True)
                         st.markdown("**🔎 What we found:** " + found, unsafe_allow_html=True)
+                        if finding.get("sdk_component_hint"):
+                            st.caption("⚠️ This looks like a reusable SDK component. The XML alone cannot confirm whether children see it or how large its actual tap area is.")
                         st.caption("🔧 For reference: " + finding["location"])
+                        st.markdown(preview_html(finding), unsafe_allow_html=True)
                         if number < len(items):
                             st.divider()
             if result["stats"].get("binary") or result["stats"].get("unreadable"):
@@ -912,105 +966,49 @@ def display_results(results):
     st.info("A frequent pattern is not necessarily a false positive, and a missing pattern is not proof of absence. Review individual evidence and scan coverage. These are potential indicators from static XML rules, not proof of deceptive intent. SAFE means no predefined indicators were found in the scanned XML, not that an app is guaranteed safe.")
 
 
-tutorial, scanner = st.tabs(["📘 Parent Tutorial Guide", "🔍 App Safety Audit Scanner & Dashboard"])
-with tutorial:
-    st.header("A simple guide: from Android app to safety report")
-    st.write("You do not need to know how to code. Follow these steps on a computer, then upload your ZIP file in the Scanner tab.")
-    st.markdown('<div class="info-panel"><b>First, what are dark patterns?</b><p>Some apps use design tricks that can push children to spend money, watch more ads, or share information. This tool looks for possible warning signs in the app’s screen files.</p></div>', unsafe_allow_html=True)
+def parent_report(result):
+    st.subheader(result["app"])
+    st.metric("Screening assessment", result["rating"])
+    st.write(verdict_text(result))
+    st.caption("Static screening only. No findings does not mean safe. Risk thresholds are researcher-defined.")
+    for f in result["findings"]:
+        with st.container(border=True):
+            st.subheader(f["name"])
+            st.caption(f["severity"] + " severity · " + f["code"])
+            st.write(PARENT_INFO[f["code"]])
+            where, found = friendly_finding(f)
+            st.markdown(found, unsafe_allow_html=True)
+            st.markdown(preview_html(f), unsafe_allow_html=True)
+            st.caption(f["location"])
+            if f.get("sdk_component_hint"):
+                st.warning("Possible SDK component; actual display and touch area are unverified.")
+            st.write("Recommendation: review this interaction with your child before allowing independent use.")
+    st.download_button("Download HTML report", create_html_bytes([result]), HTML_NAME, mime="text/html")
 
-    st.subheader("Step 1 · Get the Android app file (APK)")
-    st.write("An **APK** is the file used to package an Android app. You need the APK file to inspect the app’s screens. You do **not** need to install the app on your phone.")
-    st.markdown("""**Where to look, in this order:**
-- **The app developer's official website or GitHub Releases:** best when the developer offers an APK directly.
-- **[F-Droid](https://f-droid.org/):** a source for free and open-source Android apps. It won't have every children's app.
-- **[APKMirror](https://www.apkmirror.com/):** a third-party APK archive; check the publisher, version, and file details carefully.
-- **[APKPure](https://apkpure.com/):** another third-party option, but use extra caution and verify the app and publisher. It is not guaranteed safe.
 
-**Safety reminder:** Avoid random download links, advertisements pretending to be download buttons, and modified or “premium unlocked” APKs. Download only apps you are allowed to inspect. If you cannot find a trustworthy APK, do not download an unknown file just to complete the scan.""")
+def main():
+    st.markdown(APP_CSS, unsafe_allow_html=True)
+    st.markdown('<div class="hero"><h1>Children’s App Safety Audit</h1><p>Static Android XML screening · research prototype</p></div>', unsafe_allow_html=True)
+    mode = st.radio("Choose your mode", ["Parent Mode", "Researcher Mode"], horizontal=True)
+    parent = mode == "Parent Mode"
+    with st.expander("How to prepare a ZIP"):
+        st.write("Obtain an authorized APK from a trusted source. Do not install it. Decode resources using JADX, then ZIP the app folder including layout and values directories.")
+        st.code('jadx --no-src -d decoded_app app.apk')
+        st.write("Parent Mode accepts one app per scan; Researcher Mode accepts multiple app folders or ZIPs. Dynamic screens may be missing.")
+    uploads = st.file_uploader("Upload decoded XML ZIP" if parent else "Upload decoded XML ZIPs", type=["zip"], accept_multiple_files=not parent, key=mode)
+    if st.button("Scan application" if parent else "Scan dataset", disabled=not uploads, type="primary"):
+        results, messages = audit_uploaded_files([uploads] if parent else uploads, st.progress(0))
+        if parent and len(results) != 1:
+            messages.append("Parent Mode requires exactly one scan-ready application. Use Researcher Mode for batch archives.")
+            results = []
+        st.session_state[mode] = (results, messages)
+    if mode in st.session_state:
+        results, messages = st.session_state[mode]
+        for msg in messages: st.warning(msg)
+        if results:
+            if parent: parent_report(results[0])
+            else: display_results(results)
+        else: st.error("No eligible scan result.")
 
-    st.subheader("Step 2 · Open the APK in JADX")
-    st.write("**JADX-GUI** is a desktop program that lets you look inside an Android app file. Get it from the [official JADX GitHub releases](https://github.com/skylot/jadx/releases).")
-    st.markdown("""1. Open **JADX-GUI** on your computer.
-2. Choose **File → Open** (or drag the APK into the window) and select your `.apk` file.
-3. Wait while JADX loads the app.
-4. In the folder list on the left, expand **Resources**. Depending on the app and JADX version, you may see **`res` → `layout`** (and folders such as `layout-land` or `layout-v21`).
-5. Open a `.xml` file in `layout`. **Can you read text such as `<LinearLayout` or `<Button` and attributes like `android:text`?** If yes, you have readable XML. If the layouts are missing or unreadable, continue to Step 3.""")
-    st.info("JADX is useful for **finding and viewing** resources, but exporting files from JADX does not always give the complete, decoded XML structure needed for scanning. For the most reliable ZIP, use Step 3.")
-
-    st.subheader("Step 3 · Decode the screen files with Apktool")
-    st.write("**Apktool** is a separate desktop tool that turns many Android resource files into readable folders. This is the recommended way to prepare files for the scanner.")
-    st.markdown("""1. Follow the installation instructions on the [official Apktool website](https://apktool.org/). You may need Java installed.
-2. Put the APK in a folder on your computer. Rename it to `my_app.apk` to make the next step easier.
-3. Open **Terminal** (macOS/Linux) or **Command Prompt / PowerShell** (Windows) in that folder.
-4. Run the command below. If Apktool is not recognized, check its installation instructions and PATH setup.""")
-    st.code("apktool d my_app.apk -o decoded_app", language="bash")
-    st.write("When it finishes, open the new **`decoded_app`** folder. Inside **`res`**, look for **`layout`** (the app's screen layouts) and **`values`** (text and size definitions). Some apps use several `layout-*` folders. Keep them all.")
-    st.caption("If the command fails, the APK may be incompatible, incomplete, or protected. The scanner cannot analyze an APK directly; it needs readable XML files.")
-
-    st.subheader("Step 4 · Make your ZIP file")
-    st.markdown("""1. Find the **`decoded_app`** folder created in Step 3.
-2. Right-click it and choose **Compress / Send to → Compressed (zipped) folder** (the wording depends on your computer).
-3. Check that the ZIP contains a path like **`decoded_app/res/layout/`** and **`decoded_app/res/values/`**. Do not zip only a screenshot or the original `.apk`.
-4. Save the `.zip` file somewhere you can find it, such as Downloads or Desktop.""")
-
-    st.subheader("Step 5 · Scan and read the report")
-    st.markdown("""1. Open the **🔍 App Safety Audit Scanner & Dashboard** tab above.
-2. Upload the ZIP file you just made.
-3. Click **🔍 Scan Apps** and wait for the results.
-4. Open the app's result card to read **What this means for your child**, **📍 Where**, and **🔎 What we found**.
-5. Use the download buttons to save the report if you want.""")
-
-    st.subheader("What do the results mean?")
-    st.markdown("""- 🟢 **SAFE:** the scanner did not find any of its predefined warning signs in the files checked.
-- 🟡 **MILD RISK:** it found one or two counted warning signs, with no high-severity finding.
-- 🔴 **UNSAFE:** it found three or more counted warning signs, or at least one high-severity finding.
-
-These labels are **screening results, not guarantees**. A green result does not prove an app is safe, and a red result does not prove the developer intended to mislead children.""")
-    with st.expander("Optional: What this tool can and cannot check"):
-        st.write("The scanner reads Android XML screen files. It cannot see everything that happens while a child uses an app, such as live ads, purchases, tracking, or screens created while the app runs. Some matching words may be harmless, and some problems may not appear in the files. The risk thresholds are rules defined for this research project; they are not a medically validated safety score.")
-
-with scanner:
-    st.header("Scan decoded Android layouts")
-    st.write("Upload one or more ZIP archives containing decoded `.xml` layout files and, ideally, the matching `res/values` resource files.")
-    uploads = st.file_uploader("Choose ZIP files", type=["zip"], accept_multiple_files=True, help="Multiple app folders inside a ZIP are supported.")
-    with st.expander("⚙️ Advanced settings (optional — you can leave these unchanged)"):
-        st.write("These options are mainly for researchers comparing scan results. **Parents can keep the recommended defaults.**")
-        st.markdown("**How should repeated findings affect the app's safety rating?**")
-        st.write("Imagine one app has **4 tiny close buttons**, but no other problems:")
-        st.markdown("""- **Different pattern types (recommended):** counts this as **1 type** of problem → **MILD RISK**.
-- **Every time a problem appears:** counts all **4 buttons** → **UNSAFE**.""")
-        new_counts = st.radio(
-            "Choose how to count findings for the safety rating",
-            ["categories", "occurrences"],
-            index=0,
-            format_func=lambda v: "Different pattern types (recommended)" if v == "categories" else "Every occurrence (count repeated findings)",
-            help="Only the rating calculation changes. The report still shows every detected location either way.",
-        )
-        st.caption("A single High-severity finding always gives an UNSAFE rating, whichever counting option you choose. All individual findings remain visible and are included in the CSV.")
-        st.markdown("**Which small buttons should be flagged?**")
-        new_strict = st.checkbox("Only check unusually small close, skip, or dismiss buttons (recommended)", value=True)
-        st.write("**Checked:** focuses on tiny buttons used to close or skip something. **Unchecked:** also flags other tiny buttons, which may produce more false alarms.")
-        st.caption("These settings apply when you click Scan Apps. They do not delete or rewrite any of the 15 detection rules.")
-    if "audit" not in st.session_state:
-        st.session_state.audit = None
-    if st.button("🔍 Scan Apps", type="primary", disabled=not uploads):
-        RATING_COUNTS = new_counts
-        STRICT_CLOSE_ONLY = new_strict
-        bar = st.progress(0, text="Preparing scan…")
-        with st.spinner("Checking XML layouts and resolving resources…"):
-            results, messages = audit_uploaded_files(uploads, bar)
-        st.session_state.audit = {"results": results, "messages": messages, "counts": new_counts, "strict": new_strict}
-    if st.session_state.audit is not None:
-        audit = st.session_state.audit
-        if audit["messages"]:
-            with st.expander(f"Scan notices ({len(audit['messages'])})", expanded=not bool(audit["results"])):
-                for message in audit["messages"]:
-                    st.warning(message)
-        if audit["results"]:
-            RATING_COUNTS = audit["counts"]
-            STRICT_CLOSE_ONLY = audit["strict"]
-            display_results(audit["results"])
-        else:
-            st.error("No readable app layouts were scanned. Please upload decoded Android XML layouts, for example from Apktool.")
-    else:
-        st.info("Choose your ZIP file(s) and click Scan Apps to see your dashboard.")
+if __name__ == "__main__":
+    main()
